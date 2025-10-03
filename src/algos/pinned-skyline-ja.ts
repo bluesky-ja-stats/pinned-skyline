@@ -2,7 +2,7 @@ import { type QueryParams } from '../lexicon/types/app/bsky/feed/getFeedSkeleton
 import { type AppContext } from '../util/config'
 
 // max 15 chars
-export const shortname = 'whats-alf'
+export const shortname = 'pinned-skyline-ja'
 
 export const handler = async (ctx: AppContext, params: QueryParams) => {
   let builder = ctx.db
@@ -20,6 +20,9 @@ export const handler = async (ctx: AppContext, params: QueryParams) => {
 
   const feed = res.map((row) => ({
     post: row.uri,
+    reason: {
+      $type: 'app.bsky.feed.defs#skeletonReasonPin',
+    },
   }))
 
   let cursor: string | undefined

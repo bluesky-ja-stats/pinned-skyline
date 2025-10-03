@@ -1,81 +1,100 @@
 import { IngesterEvent } from 'atingester'
 import { CID } from 'multiformats/cid'
+import { AtpAgent } from '@atproto/api'
 import { BlobRef, JsonBlobRef } from '@atproto/lexicon'
+import { AtUri } from '@atproto/syntax'
 import { type Database } from './db'
 import { ids, lexicons } from './lexicon/lexicons'
+import { Main as Images } from './lexicon/types/app/bsky/embed/images'
+import { Main as RecordWithMedia } from './lexicon/types/app/bsky/embed/recordWithMedia'
+import { Main as Video } from './lexicon/types/app/bsky/embed/video'
+import { Record as ProfileRecord } from './lexicon/types/app/bsky/actor/profile' 
 import { Record as PostRecord } from './lexicon/types/app/bsky/feed/post'
 import { Record as RepostRecord } from './lexicon/types/app/bsky/feed/repost'
 import { Record as LikeRecord } from './lexicon/types/app/bsky/feed/like'
 import { Record as FollowRecord } from './lexicon/types/app/bsky/graph/follow'
-import { env } from './util/config'
 
 let i = 0
 export const handleEvent = async (evt: IngesterEvent, db: Database): Promise<void> => {
   i++
-  if ('time_us' in evt && i % 20 === 0) {
-    await updateCursor(evt.time_us, db)
-  } else if ('seq' in evt && evt.seq % 20 === 0) {
-    await updateCursor(evt.seq, db)
+  if (i % 100 === 0) {
+    const now = new Date()
+    now.setDate(now.getDate() - 1)
+    const timeStr = now.toISOString()
+    await db
+      .deleteFrom('post')
+      .where('post.indexedAt', '<', timeStr)
+      .execute()
   }
 
-  // This logs the text of every post off the firehose.
-  // Just for fun :)
-  // Delete before actually using
-  if (evt.event === 'create') {
-    if (evt.collection === ids.AppBskyFeedPost && isPost(evt.record)) {
-      console.log(evt.record.text)
-    }
-  }
-
-  if (evt.event === 'create') {
-    if (evt.collection === ids.AppBskyFeedPost && isPost(evt.record)) {
-      if (evt.record.text.toLowerCase().includes('alf')) {
-        await db
-          .insertInto('post')
-          .values({
-            uri: evt.uri.toString(),
-            cid: evt.cid.toString(),
-            indexedAt: new Date().toISOString(),
-          })
-          .onConflict((oc) => oc.doNothing())
-          .execute()
+  if (evt.event === 'create' || evt.event === 'update') {
+    if (evt.collection === ids.AppBskyActorProfile && isProfile(evt.record)) {
+      if (evt.record.pinnedPost) {
+        const pinnedPostUri = new AtUri(evt.record.pinnedPost.uri)
+        const agent = new AtpAgent({service: 'https://public.api.bsky.app'})
+        const pinnedPost = await agent.getPost({repo: pinnedPostUri.hostname, rkey: pinnedPostUri.rkey})
+        if (isJa(pinnedPost.value)) {
+          await db
+            .insertInto('post')
+            .values({
+              uri: pinnedPost.uri,
+              cid: pinnedPost.cid,
+              did: evt.did,
+              indexedAt: new Date().toISOString(),
+            })
+            .onConflict((oc) => oc.doNothing())
+            .execute()
+          await db
+            .deleteFrom('post')
+            .where('did', '=', evt.did)
+            .where('uri', '!=', pinnedPost.uri)
+            .execute()
+        }
       }
-    } else if (evt.collection === ids.AppBskyFeedRepost && isRepost(evt.record)) {
-    } else if (evt.collection === ids.AppBskyFeedLike && isLike(evt.record)) {
-    } else if (evt.collection === ids.AppBskyGraphFollow && isFollow(evt.record)) {
     }
   }
-
-  if (evt.event === 'update') {} // updates not supported yet
 
   if (evt.event === 'delete') {
-    if (evt.collection === ids.AppBskyFeedPost) {
+    if (evt.collection === ids.AppBskyActorProfile) {
       await db
         .deleteFrom('post')
-        .where('uri', '=', evt.uri.toString())
+        .where('did', '=', evt.did)
         .execute()
-    } else if (evt.collection === ids.AppBskyFeedRepost) {
-    } else if (evt.collection === ids.AppBskyFeedLike) {
-    } else if (evt.collection === ids.AppBskyGraphFollow) {
     }
   }
 }
 
-const updateCursor = async (cursor: number, db: Database) => {
-  await db
-    .insertInto('sub_state')
-    .values({
-      service: `${env.FEEDGEN_SUBSCRIPTION_MODE}:` + env[`FEEDGEN_SUBSCRIPTION_${env.FEEDGEN_SUBSCRIPTION_MODE.toUpperCase()}_ENDPOINT`],
-      cursor,
-    })
-    .onConflict((oc) => oc
-      .column('service')
-      .where('service', '=', `${env.FEEDGEN_SUBSCRIPTION_MODE}:` + env[`FEEDGEN_SUBSCRIPTION_${env.FEEDGEN_SUBSCRIPTION_MODE.toUpperCase()}_ENDPOINT`])
-      .doUpdateSet({
-        cursor: (eb) => eb.ref('excluded.cursor')
-      })
-    )
-    .execute()
+const isJa = (record: PostRecord): boolean => {
+  let searchtext: string = record.text
+  if (isImages(record.embed)) {
+    for (const image of record.embed.images) searchtext += `\n${image.alt}`
+  }
+  if (isRecordWithMedia(record.embed) && 'images' in record.embed.media) {
+    for (const image of record.embed.media.images) searchtext += `\n${image.alt}`
+  }
+  if (isVideo(record.embed)) {
+    searchtext += `\n${record.embed.alt}`
+  }
+  if (record.langs?.includes('ja') || searchtext.match(/^.*[ぁ-んァ-ヶｱ-ﾝﾞﾟー]+.*$/)) {
+    return true
+  }
+  return false
+}
+
+export const isImages = (obj: unknown): obj is Images => {
+  return validate(obj, ids.AppBskyEmbedImages)
+}
+
+export const isRecordWithMedia = (obj: unknown): obj is RecordWithMedia => {
+  return validate(obj, ids.AppBskyEmbedRecordWithMedia)
+}
+
+export const isVideo = (obj: unknown): obj is Video => {
+  return validate(obj, ids.AppBskyEmbedVideo)
+}
+
+export const isProfile = (obj: unknown): obj is ProfileRecord => {
+  return isType(obj, ids.AppBskyActorProfile)
 }
 
 export const isPost = (obj: unknown): obj is PostRecord => {
@@ -92,6 +111,15 @@ export const isLike = (obj: unknown): obj is LikeRecord => {
 
 export const isFollow = (obj: unknown): obj is FollowRecord => {
   return isType(obj, ids.AppBskyGraphFollow)
+}
+
+const validate = (obj: unknown, nsid: string) => {
+  try {
+    const result = lexicons.validate(nsid, fixBlobRefs(obj))
+    return result.success
+  } catch (err) {
+    return false
+  }
 }
 
 const isType = (obj: unknown, nsid: string) => {
