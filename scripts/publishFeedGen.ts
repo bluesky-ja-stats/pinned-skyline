@@ -96,7 +96,7 @@ const run = async () => {
     record: {
       did: feedGenDid,
       displayName: displayName,
-      description: '日本語の固定ポストが固定された時系列順に出てきます。\n\ngithub: https://github.com/bluesky-ja-stats/pinned-skyline',
+      description: description,
       avatar: avatarRef,
       createdAt: new Date().toISOString(),
       contentMode: videoOnly ? AppBskyFeedDefs.CONTENTMODEVIDEO : AppBskyFeedDefs.CONTENTMODEUNSPECIFIED,
